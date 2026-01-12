@@ -24,10 +24,9 @@ import os
 from dataclasses import dataclass, field, asdict
 from typing import List, Dict, Tuple
 
-# 假设您的数据工具文件名为 data_utils.py
 from data_utils import FT_Dataset
 
-# ============================== 1. 配置和日志 ==============================
+
 @dataclass
 class ExperimentConfig:
     # --- [推荐修改] ---
@@ -55,13 +54,12 @@ class ExperimentConfig:
     
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
 
-# ============================== 2. 数据工具 (DatasetSplit) ==============================
+
 class DatasetSplit(Dataset):
     def __init__(self, dataset, idxs): self.dataset, self.idxs = dataset, list(idxs)
     def __len__(self): return len(self.idxs)
     def __getitem__(self, item): return self.dataset[self.idxs[item]]
 
-# ============================== 3. 模型定义 (Client/Server) ==============================
 class ClientModel(nn.Module):
     def __init__(self, embeddings, encoder_layers, attention_mask_getter):
         super().__init__()
@@ -89,15 +87,13 @@ class ServerModel(nn.Module):
         
         loss = None
         if labels is not None:
-            # --- [核心修改] ---
-            # 由于训练数据已通过 SMOTE 进行了平衡，此处不再需要手动设置类别权重。
-            # 使用标准的交叉熵损失函数即可。
+       
             loss_fct = nn.CrossEntropyLoss() 
             loss = loss_fct(logits.view(-1, self.num_classes), labels.view(-1))
             
         return logits, loss
         
-# --- 通信量计算工具 ---
+
 def get_tensor_size_mb(tensor: torch.Tensor):
     if not isinstance(tensor, torch.Tensor): return 0
     return tensor.numel() * tensor.element_size() / (1024 * 1024)
@@ -109,10 +105,10 @@ def get_trainable_params_size_mb(model: nn.Module):
             total_size += param.numel() * param.element_size()
     return total_size / (1024 * 1024)
 
-# ============================== 4. 训练器类 ==============================
+
 class SFLTrainer:
     def __init__(self, config: ExperimentConfig):
-        # ... (初始化部分保持不变) ...
+      
         self.config = config
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.set_seed(config.seed)
@@ -124,7 +120,7 @@ class SFLTrainer:
                 ignore_mismatched_sizes=True
             )
         except OSError:
-            logging.error(f"错误：无法从本地路径 '{config.model_name}' 加载模型。")
+            logging.error(f"Error: Unable to retrieve from local path '{config.model_name}' 加载模型。")
             raise
 
         peft_config_full = LoraConfig(task_type=TaskType.SEQ_CLS, r=config.lora_r, lora_alpha=config.lora_alpha, lora_dropout=config.lora_dropout, target_modules=config.target_modules, modules_to_save=["classifier"], bias="none")
@@ -142,13 +138,13 @@ class SFLTrainer:
         self.client_data_sizes = []
         self.clustered_clients_by_resource = {}
         
-        logging.info(f"使用设备: {self.device}, 实验配置: {asdict(config)}")
+        logging.info(f"Use equipment: {self.device}, Experimental configuration: {asdict(config)}")
 
     def set_seed(self, seed):
         random.seed(seed); np.random.seed(seed); torch.manual_seed(seed)
         if torch.cuda.is_available(): torch.cuda.manual_seed_all(seed)
 
-    # ... (aggregate, train_client, evaluate, _extract_lora_weights_vector, perform_double_clustering, genetic_algorithm_client_selection 方法保持不变) ...
+   
     def aggregate(self, w_locals, client_weights=None):
         if not w_locals: return
         
@@ -205,7 +201,7 @@ class SFLTrainer:
                 all_preds.extend(preds.cpu().numpy()); all_labels.extend(batch['labels'].cpu().numpy())
         report_dict = classification_report(all_labels, all_preds, target_names=[f'Class {i}' for i in range(self.config.num_classes)], zero_division=0, output_dict=True)
         mcc = matthews_corrcoef(all_labels, all_preds)
-        logging.info(f"\n分类评估报告:\n{classification_report(all_labels, all_preds, target_names=[f'Class {i}' for i in range(self.config.num_classes)], zero_division=0)}")
+        logging.info(f"\nClassification Assessment Report:\n{classification_report(all_labels, all_preds, target_names=[f'Class {i}' for i in range(self.config.num_classes)], zero_division=0)}")
         return {'eval_loss': total_eval_loss / len(test_loader) if len(test_loader) > 0 else 0, 'mcc': mcc, 'report': report_dict }
 
     def _extract_lora_weights_vector(self, model_state_dict):
@@ -214,26 +210,26 @@ class SFLTrainer:
         return torch.cat([lora_params[k].view(-1) for k in sorted(lora_params.keys())]).cpu().numpy()
 
     def perform_double_clustering(self):
-        logging.info("执行双重聚类策略...")
+        logging.info("Implement a dual clustering strategy...")
         client_features, available_clients = [], []
         for i, weight in enumerate(self.client_lora_weights):
             if weight is not None: client_features.append(weight); available_clients.append(i)
         if len(available_clients) < self.config.num_data_clusters:
-            logging.warning(f"可用客户端数量({len(available_clients)})不足以聚类，跳过。")
+            logging.warning(f"Number of available clients({len(available_clients)})Insufficient for clustering, skip.")
             self.data_cluster_labels = [0] * self.config.num_clients
             return
         kmeans = KMeans(n_clusters=self.config.num_data_clusters, random_state=self.config.seed, n_init='auto').fit(np.array(client_features))
         for i, client_idx in enumerate(available_clients): self.data_cluster_labels[client_idx] = kmeans.labels_[i]
-        logging.info(f"数据聚类结果: {list(zip(available_clients, kmeans.labels_))}")
+        logging.info(f"Data clustering results: {list(zip(available_clients, kmeans.labels_))}")
         self.clustered_clients_by_resource = {c_id: {res: [] for res in self.client_resource_profiles} for c_id in range(self.config.num_data_clusters)}
         for i in range(self.config.num_clients):
             if self.data_cluster_labels[i] != -1: self.clustered_clients_by_resource[self.data_cluster_labels[i]][self.client_profiles[i]].append(i)
-        logging.info("内部资源分组完成。")
+        logging.info("Internal resource grouping completed.")
 
     def genetic_algorithm_client_selection(self, candidates: List[int], num_to_select: int) -> List[int]:
         if not candidates or num_to_select <= 0: return []
         if len(candidates) <= num_to_select:
-            logging.info(f"GA: 候选人数量 ({len(candidates)}) 不足或等于选择数量 ({num_to_select})，直接返回所有候选人: {candidates}")
+            logging.info(f"GA: Number of candidates ({len(candidates)}) Less than or equal to the number of selections ({num_to_select})，Return all candidates directly: {candidates}")
             return candidates
         num_to_select = min(num_to_select, len(candidates))
         def fitness(individual):
@@ -275,12 +271,12 @@ class SFLTrainer:
         return sorted(final_selection)
         
     def run(self, dataset_train, dataset_test):
-        # ... (run 方法内部逻辑保持不变) ...
+      
         dict_users_indices = np.array_split(range(len(dataset_train)), self.config.num_clients)
         self.client_data_sizes = [len(idxs) for idxs in dict_users_indices]
         train_loaders = [DataLoader(DatasetSplit(dataset_train, list(idxs)), self.config.batch_size, shuffle=True) for idxs in dict_users_indices]
         test_loader_global = DataLoader(dataset_test, self.config.batch_size, shuffle=False)
-        logging.info(f"开始训练 {self.config.rounds} 轮...")
+        logging.info(f"Start training {self.config.rounds} rounds...")
         self.data_cluster_labels = [0] * self.config.num_clients
         self.perform_double_clustering()
         for round_num in range(1, self.config.rounds + 1):
@@ -292,7 +288,7 @@ class SFLTrainer:
                 if cid != -1: clients_by_cluster[cid].append(i)
             active_clusters = [cid for cid, clist in clients_by_cluster.items() if clist]
             if not active_clusters:
-                logging.warning("无可用数据簇，跳过本轮。"); continue
+                logging.warning("No data clusters available, skip this round."); continue
             selected_clients = []
             num_per_cluster = max(1, self.config.clients_per_round // len(active_clusters))
             for cid in active_clusters:
@@ -307,8 +303,8 @@ class SFLTrainer:
                 potential_adds = list(set(all_possible) - set(selected_clients))
                 selected_clients.extend(random.sample(potential_adds, min(len(potential_adds), needed)))
             if not selected_clients:
-                logging.warning("无客户端被选中，跳过本轮。"); continue
-            logging.info(f"本轮最终选中客户端: {selected_clients}")
+                logging.warning("If no client is selected, skip this round."); continue
+            logging.info(f"The client ultimately selected in this round: {selected_clients}")
             w_locals, local_losses, round_comm_stats = [], [], {'total_uplink_mb': 0, 'total_downlink_mb': 0}
             for idx in selected_clients:
                 split_layer = self.client_resource_profiles[self.client_profiles[idx]]['split_layer']
@@ -330,16 +326,16 @@ class SFLTrainer:
             metrics = self.evaluate(test_loader_global)
             round_duration = time.time() - round_start_time
             self.history.append({'round': round_num, 'avg_train_loss': np.mean(local_losses) if local_losses else 0, 'round_duration_sec': round_duration, **round_comm_stats, **metrics})
-            logging.info(f"--- Round {round_num} 总结 ---")
-            logging.info(f"  全局模型评估 - Accuracy: {metrics['report']['accuracy']:.4f}, F1 (Weighted): {metrics['report']['weighted avg']['f1-score']:.4f}, MCC: {metrics['mcc']:.4f}")
-            logging.info(f"  本轮耗时: {round_duration:.2f} 秒")
+            logging.info(f"--- Round {round_num} Summarize ---")
+            logging.info(f"  Global model evaluation - Accuracy: {metrics['report']['accuracy']:.4f}, F1 (Weighted): {metrics['report']['weighted avg']['f1-score']:.4f}, MCC: {metrics['mcc']:.4f}")
+            logging.info(f"  This round takes time: {round_duration:.2f} 秒")
 
-    def save_results(self, output_dir="results_multiclass_sfl_smote"): # --- [推荐修改] ---
+    def save_results(self, output_dir="results_multiclass_sfl_smote"): 
         os.makedirs(output_dir, exist_ok=True)
         filename = f"{self.config.exp_name}_{time.strftime('%Y%m%d_%H%M%S')}.csv"
         
         if not self.history:
-            logging.warning("历史记录为空，无法保存结果。")
+            logging.warning("The history is empty, so the result cannot be saved.")
             return
 
         with open(os.path.join(output_dir, filename), 'w', newline='', encoding='utf-8') as f:
@@ -365,38 +361,32 @@ class SFLTrainer:
                     class_metrics = report.get(f'Class {i}', {})
                     row.extend([class_metrics.get('precision'), class_metrics.get('recall'), class_metrics.get('f1-score'), class_metrics.get('support')])
                 writer.writerow(row)
-        logging.info(f"详细评估结果已保存到: {os.path.join(output_dir, filename)}")
+        logging.info(f"Detailed evaluation results have been saved to: {os.path.join(output_dir, filename)}")
 
-# ============================== 5. 主函数 ==============================
 def main():
     config = ExperimentConfig()
-    
-    # --- [核心修改] ---
-    # 定义SMOTE处理后的数据路径
+ 
     train_data_path = 'processed_data_SMOTE/train_data.jsonl'
     test_data_path = 'processed_data_SMOTE/test_data.jsonl'
 
-    # 检查SMOTE处理后的文件是否存在
     if not all(os.path.exists(f) for f in [train_data_path, test_data_path]):
-        logging.error(f"错误：找不到SMOTE处理后的数据文件 '{train_data_path}' 或 '{test_data_path}'。")
-        logging.error("请先运行包含SMOTE处理的 `UNSW_NB15_..._processed_llm.py` 脚本。")
+        logging.error(f"Error: Data file processed by SMOTE not found. '{train_data_path}' 或 '{test_data_path}'。")
+        logging.error("Please run the script `UNSW_NB15_..._processed_llm.py`, which contains SMOTE processing, first.")
         return
 
     try:
         tokenizer = AutoTokenizer.from_pretrained(config.model_name)
     except OSError:
-        logging.error(f"错误：无法从本地路径 '{config.model_name}' 加载分词器。")
+        logging.error(f"Error: Unable to load tokenizer from local path '{config.model_name}'.")
         return
 
-    # --- [核心修改] ---
-    # 使用SMOTE处理后的数据进行加载
     dataset_train = FT_Dataset(train_data_path, config.batch_size, config.max_seq_length, tokenizer)
     dataset_test = FT_Dataset(test_data_path, config.batch_size, config.max_seq_length, tokenizer)
         
     trainer = SFLTrainer(config)
     trainer.run(dataset_train, dataset_test)
     trainer.save_results()
-    logging.info("\n实验完成!")
+    logging.info("\nExperiment completed!")
 
 if __name__ == "__main__":
     main()
