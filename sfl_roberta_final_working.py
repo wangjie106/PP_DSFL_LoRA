@@ -1,6 +1,3 @@
-# file: sfl_roberta_final_working.py
-# 最终版：修复了本地路径加载和 TypeError 问题
-
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, Dataset
@@ -19,13 +16,10 @@ import os
 from dataclasses import dataclass, field, asdict
 from typing import List, Optional
 
-# 导入我们自己的数据工具
 from data_utils import FT_Dataset, get_tokenizer
 
-# ============================== 1. 配置和日志 ==============================
 @dataclass
 class ExperimentConfig:
-    """实验配置"""
     exp_name: str = "dynamic_split_sfl_local"
     rounds: int = 50
     num_clients: int = 10 
@@ -38,20 +32,16 @@ class ExperimentConfig:
     lora_dropout: float = 0.1
     target_modules: List[str] = field(default_factory=lambda: ["query", "value"])
     lr: float = 2e-5
-    # [修复] 明确指定使用本地模型路径，而不是模型名称
     model_name: str = "./roberta-base-local"
     seed: int = 42
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
 
-# ============================== 2. 数据工具 (DatasetSplit) ==============================
 class DatasetSplit(Dataset):
     def __init__(self, dataset, idxs): self.dataset, self.idxs = dataset, list(idxs)
     def __len__(self): return len(self.idxs)
     def __getitem__(self, item): return self.dataset[self.idxs[item]]
 
-# ============================== 3. 模型定义 (Client/Server) ==============================
-# (这部分代码无需修改，保持原样)
 class ClientModel(nn.Module):
     def __init__(self, embeddings, encoder_layers, attention_mask_getter):
         super().__init__()
@@ -77,34 +67,31 @@ class ServerModel(nn.Module):
         loss = nn.CrossEntropyLoss()(logits.view(-1, 2), labels.view(-1)) if labels is not None else None
         return logits, loss
 
-# ============================== 4. 训练器类 ==============================
-# (SFLTrainer 类本身无需修改，保持原样)
 class SFLTrainer:
     def __init__(self, config: ExperimentConfig):
         self.config = config
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.set_seed(config.seed)
         try:
-            # 现在会从 ./roberta-base-local 加载，不会再访问网络
             base_model_full = RobertaForSequenceClassification.from_pretrained(config.model_name, num_labels=2)
         except OSError:
-            logging.error(f"找不到模型 '{config.model_name}'。请确认该文件夹存在且文件完整。")
+            logging.error(f"Model '{config.model_name}' not found. Please confirm that the folder exists and the files are complete.")
             raise
         peft_config_full = LoraConfig(task_type=TaskType.SEQ_CLS, r=config.lora_r, lora_alpha=config.lora_alpha, lora_dropout=config.lora_dropout, target_modules=config.target_modules, modules_to_save=["classifier"], bias="none")
         self.net_glob_full = get_peft_model(base_model_full, peft_config_full).to(self.device)
         self.history = []
         
         self.client_resource_profiles = {
-            'high': {'split_layer': 8, 'description': '计算资源强，承担更多层'},
-            'medium': {'split_layer': 6, 'description': '计算资源中等，标准分割'},
-            'low': {'split_layer': 4, 'description': '计算资源弱，承担更少层'}
+            'high': {'split_layer': 8, 'description': 'High computational resources, handling more layers'},
+            'medium': {'split_layer': 6, 'description': 'Medium computational resources, standard split'},
+            'low': {'split_layer': 4, 'description': 'Low computational resources, handling fewer layers'}
         }
         self.client_profiles = [random.choice(list(self.client_resource_profiles.keys())) for _ in range(config.num_clients)]
         
-        logging.info(f"使用设备: {self.device}, 实验配置: {config.exp_name}")
-        logging.info("客户端资源模拟分布:")
+        logging.info(f"Using device: {self.device}, Experiment config: {config.exp_name}")
+        logging.info("Client resource simulation distribution:")
         for i, profile in enumerate(self.client_profiles):
-            logging.info(f"  - 客户端 {i}: {profile} (将使用分割点 {self.client_resource_profiles[profile]['split_layer']})")
+            logging.info(f"  - Client {i}: {profile} (will use split layer {self.client_resource_profiles[profile]['split_layer']})")
 
     def set_seed(self, seed):
         random.seed(seed); np.random.seed(seed); torch.manual_seed(seed)
@@ -164,17 +151,17 @@ class SFLTrainer:
         train_loaders = [DataLoader(DatasetSplit(dataset_train, list(idxs)), batch_size=self.config.batch_size, shuffle=True) for idxs in dict_users]
         test_loader_global = DataLoader(dataset_test, batch_size=self.config.batch_size, shuffle=False)
         
-        logging.info(f"开始训练: {self.config.rounds} 轮")
+        logging.info(f"Start training: {self.config.rounds} rounds")
         for round_num in range(1, self.config.rounds + 1):
             logging.info(f"\n--- Round {round_num}/{self.config.rounds} ---")
             selected_clients = np.random.choice(range(self.config.num_clients), self.config.clients_per_round, replace=False)
-            logging.info(f"选中的客户端: {selected_clients}")
+            logging.info(f"Selected clients: {selected_clients}")
             w_locals, local_losses = [], []
             
             for idx in selected_clients:
                 profile = self.client_profiles[idx]
                 split_layer = self.client_resource_profiles[profile]['split_layer']
-                logging.info(f"  客户端 {idx} (资源: {profile}) -> 动态分割点: {split_layer}")
+                logging.info(f"  Client {idx} (Resource: {profile}) -> Dynamic split point: {split_layer}")
 
                 local_full_model = copy.deepcopy(self.net_glob_full)
                 full_roberta_model = local_full_model.base_model.model.roberta
@@ -190,7 +177,7 @@ class SFLTrainer:
 
             if w_locals:
                 self.FedAvg(w_locals)
-                logging.info("联邦聚合完成")
+                logging.info("Federated aggregation completed")
             
             avg_round_loss = np.mean(local_losses) if local_losses else 0
             metrics = self.evaluate(test_loader_global)
@@ -198,14 +185,14 @@ class SFLTrainer:
             self.history.append(round_summary)
             
             print()
-            logging.info(f"--- Round {round_num} 总结 ---")
-            logging.info(f"  平均客户端训练损失: {avg_round_loss:.4f}")
-            logging.info(f"  全局模型评估损失:   {metrics['eval_loss']:.4f}")
-            logging.info(f"  全局模型评估准确率: {metrics['acc']:.4f}")
-            logging.info(f"  全局模型评估 F1 分数:  {metrics['f1']:.4f}")
-            logging.info(f"  全局模型评估精确率: {metrics['precision']:.4f}")
-            logging.info(f"  全局模型评估召回率: {metrics['recall']:.4f}")
-            print("-" * (len(f"--- Round {round_num} 总结 ---")))
+            logging.info(f"--- Round {round_num} Summary ---")
+            logging.info(f"  Average client training loss: {avg_round_loss:.4f}")
+            logging.info(f"  Global model evaluation loss:   {metrics['eval_loss']:.4f}")
+            logging.info(f"  Global model evaluation accuracy: {metrics['acc']:.4f}")
+            logging.info(f"  Global model evaluation F1 score:  {metrics['f1']:.4f}")
+            logging.info(f"  Global model evaluation precision: {metrics['precision']:.4f}")
+            logging.info(f"  Global model evaluation recall: {metrics['recall']:.4f}")
+            print("-" * (len(f"--- Round {round_num} Summary ---")))
 
     def save_results(self, output_dir="results_dynamic"):
         os.makedirs(output_dir, exist_ok=True)
@@ -219,23 +206,20 @@ class SFLTrainer:
             header = list(self.history[0].keys()) if self.history else []
             writer.writerow(header)
             for record in self.history: writer.writerow([f"{record.get(k, ''):.4f}" if isinstance(record.get(k, ''), (int, float)) else record.get(k, '') for k in header])
-        logging.info(f"结果已保存到: {filepath}")
+        logging.info(f"Results saved to: {filepath}")
 
-# ============================== 5. 主函数 ==============================
 def main():
     config = ExperimentConfig()
-    logging.info("正在加载真实数据...")
-    # 现在会从 ./roberta-base-local 加载，不会再访问网络
+    logging.info("Loading real data...")
     tokenizer = get_tokenizer(config.model_name)
     
-    # [修复] 在调用 FT_Dataset 时，补上缺失的 config.batch_size 参数
     dataset_train = FT_Dataset('processed_data/train_data.jsonl', config.batch_size, config.max_seq_length, tokenizer)
     dataset_test = FT_Dataset('processed_data/test_data.jsonl', config.batch_size, config.max_seq_length, tokenizer)
         
     trainer = SFLTrainer(config)
     trainer.run(dataset_train, dataset_test)
     trainer.save_results()
-    logging.info("\n动态分割联邦学习实验完成!")
+    logging.info("\nDynamic Split Federated Learning experiment completed!")
 
 if __name__ == "__main__":
     main()
