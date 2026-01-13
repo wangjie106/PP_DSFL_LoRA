@@ -3,7 +3,7 @@
 This repository contains the official implementation, supplementary materials, and reproducibility details for the paper: "A Privacy-Preserving Intrusion Detection Framework for Heterogeneous Edge Devices Based on Dynamic Split Federated Learning and LoRA".
 
 ## 📌 Abstract
-This work proposes a comprehensive framework that integrates Dynamic Split Federated Learning (SFL), Low-Rank Adaptation (LoRA), and SMOTE to address the trilemma of communication overhead, client-side burden, and system heterogeneity in federated Pre-trained Language Model (PLM) fine-tuning. We achieve efficient, adaptive, and privacy-preserving intrusion detection in resource-constrained heterogeneous edge environments.
+This work proposes a comprehensive framework that integrates Dynamic Split Federated Learning (SFL), Low-Rank Adaptation (LoRA), and SMOTE to address the trilemma of communication overhead, client-side burden, and system heterogeneity in federated Pre-trained Language Model (PLM) fine-tuning.
 
 ---
 
